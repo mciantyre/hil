@@ -1,0 +1,91 @@
+on:
+  workflow_dispatch:
+  schedule:
+  - cron: '17 8 * * 1-5'
+
+name: Test probe-rs against MIMXRT targets
+
+jobs:
+
+  build-probe-rs-aarch64-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout probe-rs upstream
+      uses: actions/checkout@v4
+      with:
+        repository: probe-rs/probe-rs
+        fetch-depth: 0
+        ref: master
+    - name: Set up git
+      run: |
+        git config --local user.name "CI"
+        git config --local user.email "<none>"
+        git remote add patches https://github.com/mciantyre/probe-rs.git
+    - name: Apply patches
+      run: git fetch patches master && git cherry-pick $(git merge-base patches/master origin/master)..patches/master
+    - name: Update Rust toolchain
+      run: rustup toolchain install stable --profile minimal --no-self-update
+    - name: Install cargo-binstall
+      run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+    - name: Install cargo cross
+      run: cargo binstall cross --no-confirm
+    - name: Build probe-rs, smoke_tester for aarch64
+      run: cross build --release --bin=probe-rs --bin=smoke_tester --target aarch64-unknown-linux-gnu
+    - name: Upload probe-rs build
+      uses: actions/upload-artifact@v4
+      with:
+        name: probe-rs
+        path: |
+          target/aarch64-unknown-linux-gnu/release/smoke_tester
+          target/aarch64-unknown-linux-gnu/release/probe-rs
+        if-no-files-found: error
+        retention-days: 1
+
+  build-imxrt1010evk-examples:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout imxrt-hal
+      uses: actions/checkout@v4
+      with:
+        repository: imxrt-rs/imxrt-hal
+    - name: Update Rust toolchain
+      run: rustup toolchain install stable --profile minimal --no-self-update --target thumbv7em-none-eabihf
+    - name: Build select examples for the 1010EVK
+      run: cargo build --release --features=board/imxrt1010evk --target=thumbv7em-none-eabihf --example=hal_led
+    - name: Upload examples
+      uses: actions/upload-artifact@v4
+      with:
+        name: imxrt1010evk-examples
+        path: |
+          target/thumbv7em-none-eabihf/release/examples/hal_led
+        if-no-files-found: error
+        retention-days: 1
+
+  flash-test-imxrt1010evk:
+    runs-on: [ self-hosted, imxrt1010evk, linux, arm64 ]
+    needs: [ build-probe-rs-aarch64-linux, build-imxrt1010evk-examples ]
+    steps:
+    - name: Download probe-rs
+      uses: actions/download-artifact@v4
+      with:
+        name: probe-rs
+        path: probe-rs
+    - name: Prepare probe-rs tools
+      run: chmod +x ./probe-rs/*
+    - name: Reveal probe-rs version
+      run: ./probe-rs/probe-rs --version
+    - name: Test chip reset
+      run: ./probe-rs/probe-rs reset --chip=mimxrt1010
+    - name: Run smoke tests
+      run: ./probe-rs/smoke_tester test --chip=mimxrt1010
+    - name: Download 1010EVK examples
+      uses: actions/download-artifact@v4
+      with:
+        name: imxrt1010evk-examples
+        path: imxrt1010evk-examples
+    - name: Flash a test program
+      env:
+        RUST_LOG: info
+      run: ./probe-rs/probe-rs download --chip=mimxrt1010 imxrt1010evk-examples/hal_led --disable-progressbars
+    - name: Did main run and turn on the LED?
+      run: test $((16#`./probe-rs/probe-rs read b32 0x401b8000 1 --chip=mimxrt1010` & $((1 << 11)))) -eq $((1 << 11))
