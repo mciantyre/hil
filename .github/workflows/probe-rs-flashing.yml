@@ -47,7 +47,7 @@ jobs:
     - name: Checkout imxrt-hal
       uses: actions/checkout@v4
       with:
-        repository: imxrt-rs/imxrt-hal
+        repository: mciantyre/imxrt-hal
     - name: Update Rust toolchain
       run: rustup toolchain install stable --profile minimal --no-self-update --target thumbv7em-none-eabihf
     - name: Build select examples for the 1010EVK
